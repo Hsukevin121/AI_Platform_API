@@ -1,0 +1,6 @@
+Flask
+requests
+ncclient
+cryptography
+lxml
+urllib3

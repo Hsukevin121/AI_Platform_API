@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: quick-check-rapp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: quick-check-rapp
+  template:
+    metadata:
+      labels:
+        app: quick-check-rapp
+    spec:
+      containers:
+      - name: quick-check-rapp-container
+        image: hsukevin121/quick-check-rapp:latest
+        ports:
+        - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: quick-check-rapp-service
+spec:
+  selector:
+    app: quick-check-rapp
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8080

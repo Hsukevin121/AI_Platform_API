@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: es-control-rapp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: es-control-rapp
+  template:
+    metadata:
+      labels:
+        app: es-control-rapp
+    spec:
+      containers:
+      - name: es-control-rapp-container
+        image: hsukevin121/es-control-rapp:latest
+        ports:
+        - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: es-control-rapp-service
+spec:
+  selector:
+    app: es-control-rapp
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8080
