@@ -35,7 +35,7 @@ def authenticate(func):
     return decorated_function
 
 @app.route('/api/v1/ORAN/deviceList', methods=['GET'])
-@authenticate
+#@authenticate
 def get_device_list():
     serverid = request.args.get('serverid')
     if serverid != "10001":

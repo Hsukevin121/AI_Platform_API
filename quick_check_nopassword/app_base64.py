@@ -26,7 +26,7 @@ def authenticate(func):
                 username, password = decoded_credentials.split(':')
                 if username == USERNAME and password == PASSWORD:
                     return func(*args, **kwargs)
-        return jsonify({'status': '401', 'msg': 'Unauthorized'}), 401
+        return jsonify({'status': '401', 'msg': 'Unauthorized'}), 400
     return decorated_function
 
 # Function to execute NETCONF command and parse data
@@ -150,18 +150,18 @@ def check_influxdb(ran_id):
         return False
 
 @app.route('/api/v1/ORAN/quick_check', methods=['GET'])
-#@authenticate
+@authenticate
 def quick_check():
     ran_data = get_bbu_info()
     if not ran_data:
-        return jsonify({"status": "error", "message": "Failed to retrieve BBU Info from NETCONF"}), 400
+        return jsonify({"status": "error", "message": "Failed to retrieve BBU Info from NETCONF"}), 402
 
     for ran_id, ran_info in ran_data.items():
         if not send_to_ves_collector(ran_id, ran_info):
-            return jsonify({"status": "error", "message": f"Failed to send data to VES Collector for {ran_id}"}), 400
+            return jsonify({"status": "error", "message": f"Failed to send data to VES Collector for {ran_id}"}), 403
 
         if not check_influxdb(ran_id):
-            return jsonify({"status": "error", "message": f"Data not found in InfluxDB for {ran_id}"}), 400
+            return jsonify({"status": "error", "message": f"Data not found in InfluxDB for {ran_id}"}), 404
 
     return jsonify({"status": "success", "message": "Quick check passed, all data correctly stored in InfluxDB"}), 200
 

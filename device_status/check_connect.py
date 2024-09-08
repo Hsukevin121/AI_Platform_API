@@ -15,7 +15,7 @@ db_connection = pymysql.connect(
 )
 
 # InfluxDB客户端配置
-influx_client = InfluxDBClient(url="http://192.168.0.39:30001", token="RyGBIs41IMTRR0YHAi0q2oKJDh6zzIjQ", org="influxdata")
+influx_client = InfluxDBClient(url="http://192.168.0.39:30001", token="l2yrVMPtDQW6Zl9KEVRI2o3LqloJcZue", org="influxdata")
 
 # Netconf检查
 def check_ru_status():
@@ -46,7 +46,7 @@ def check_pdu_status():
 # InfluxDB检查
 def check_cu_status():
     current_time = datetime.datetime.utcnow()
-    query = f'from(bucket: "o1_performance") |> range(start: -5m) |> filter(fn: (r) => r["_measurement"] == "ran1_gNB_CU_PM")'
+    query = f'from(bucket: "o1_performance") |> range(start: -5m) |> filter(fn: (r) => r["_measurement"] == "CU01001")'
     result = influx_client.query_api().query(query)
     if len(result) > 0:
         return 1  # 正常
@@ -55,7 +55,7 @@ def check_cu_status():
 
 def check_du_status():
     current_time = datetime.datetime.utcnow()
-    query = f'from(bucket: "o1_performance") |> range(start: -5m) |> filter(fn: (r) => r["_measurement"] == "ran1_gNB_DU_PM")'
+    query = f'from(bucket: "o1_performance") |> range(start: -5m) |> filter(fn: (r) => r["_measurement"] == "DU01001")'
     result = influx_client.query_api().query(query)
     if len(result) > 0:
         return 1  # 正常
@@ -64,10 +64,37 @@ def check_du_status():
 
 
 # 更新MySQL数据库中的设备状态
-def update_device_status(deviceid, status):
+def update_device_status(deviceid, new_status):
+    # 先检查当前设备的status
     with db_connection.cursor() as cursor:
-        sql = "UPDATE devicelist SET status = %s WHERE deviceid = %s"
-        cursor.execute(sql, (status, deviceid))
+        cursor.execute("SELECT status FROM devicelist WHERE deviceid = %s", (deviceid,))
+        current_status = cursor.fetchone()
+
+    if current_status:
+        current_status = current_status[0]  # 提取查询结果中的status
+
+    # 检查当前状态是否为3
+    if current_status == 3:
+        if new_status == 1:
+            print(f"Device {deviceid} is currently in status 3, and cannot be updated to status 1. No changes made.")
+            return  # 不进行更新
+        elif new_status == 2:
+            message = "The device is disconnected"
+            # 允许更新status为2
+        else:
+            print(f"Unexpected status for device {deviceid}. No changes made.")
+            return  # 不进行更新
+    else:
+        # 其他状态更新正常逻辑
+        if new_status == 1:
+            message = "The device is healthy"
+        elif new_status == 2:
+            message = "The device is disconnected"
+
+    # 更新数据库中的状态和message
+    with db_connection.cursor() as cursor:
+        sql = "UPDATE devicelist SET status = %s, message = %s WHERE deviceid = %s"
+        cursor.execute(sql, (new_status, message, deviceid))
         db_connection.commit()
 
 # 定时任务：检查设备状态并更新数据库

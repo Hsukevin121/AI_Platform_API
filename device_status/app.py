@@ -25,8 +25,8 @@ def authenticate(func):
         return jsonify({'status': 'Unauthorized'}), 401
     return decorated_function
 
-@app.route('/api/v1/ORAN/deviceList', methods=['GET'])
-@authenticate
+@app.route('/api/v1/ORAN/deviceList/status', methods=['GET'])
+#@authenticate
 def get_device_list():
     serverid = request.args.get('serverid')
     if serverid != "10001":
@@ -42,8 +42,8 @@ def get_device_list():
         )
 
         with db_connection.cursor() as cursor:
-            # 从数据库中检索devicelist
-            sql = "SELECT deviceid, devicetype, status FROM devicelist"
+            # 从数据库中检索devicelist，增加updated_at列
+            sql = "SELECT deviceid, devicename, status, message, updated_at FROM devicelist"
             cursor.execute(sql)
             device_list = cursor.fetchall()
 
@@ -52,8 +52,15 @@ def get_device_list():
 
         response = {
             "status": system_status,
-            "reporttime": datetime.datetime.utcnow().strftime("%Y%m%d%H%M%S"),
-            "deviceslist": [{"deviceid": row[0], "devicetype": row[1], "status": row[2]} for row in device_list]
+            "deviceslist": [
+                {
+                    "deviceid": row[0], 
+                    "devicename": row[1], 
+                    "status": row[2], 
+                    "message": row[3], 
+                    "reporttime": row[4].strftime('%Y-%m-%d %H:%M:%S')  # 格式化时间
+                } for row in device_list
+            ]
         }
 
         db_connection.close()
