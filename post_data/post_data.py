@@ -10,13 +10,172 @@ app = Flask(__name__)
 
 # InfluxDB连接配置
 INFLUXDB_URL = "http://192.168.0.39:30001"
-INFLUXDB_TOKEN = "l2yrVMPtDQW6Zl9KEVRI2o3LqloJcZue"
+INFLUXDB_TOKEN = "pDDWqgH1csy4LYVTPKmsoXfAalFgd4pi"
 INFLUXDB_ORG = "influxdata"
 INFLUXDB_BUCKET_PERFORMANCE = "o1_performance"
 INFLUXDB_BUCKET_SOCKET = "socket_info"
 INFLUXDB_BUCKET_PDCP = "PDCP_Throughput"
 
 client = InfluxDBClient(url=INFLUXDB_URL, token=INFLUXDB_TOKEN, org=INFLUXDB_ORG)
+
+
+# Fault ID to Device Type and Status Mapping
+fault_to_device_mapping = {
+    5: ('RU', 3),
+    6: ('RU', 3),
+    7: ('RU', 3),
+    8: ('RU', 3),
+    12: ('RU', 3),
+    13: ('RU', 3),
+    14: ('RU', 3),
+    16: ('CU', 3),
+    17: ('DU', 3),
+    18: ('RU', 3),
+    41: ('CU', 3),
+    44: ('CU', 3),
+    49: ('CU', 3),
+    52: ('DU', 3),
+    55: ('DU', 3),
+    60: ('DU', 3),
+    186: ('RU', 3),
+    193: ('RU_DU', 3),
+    194: ('RU_DU', 3),
+    195: ('RU_DU', 3),
+    196: ('DU_CU', 3),
+    197: ('DU', 3),
+    198: ('DU', 3),
+    199: ('CU', 3),
+    # 添加更多映射...
+}
+
+# 从数据库获取最新的告警数据
+def get_alarm_event():
+    try:
+        query_api = client.query_api()
+        # 查询 o1_fault_event bucket 中的告警事件
+        query_alarm = '''
+        from(bucket: "o1_fault_event")
+          |> range(start: -5m)
+          |> filter(fn: (r) => r._measurement == "BBU_FM_Event")
+          |> sort(columns: ["_time"], desc: true)
+          |> limit(n: 1)
+        '''
+        
+        tables = query_api.query(query_alarm)
+        alarm_data = {}
+        report_time = None
+
+        # 处理告警事件数据
+        for table in tables:
+            for record in table.records:
+                field = record.get_field()
+                value = record.get_value()
+                time = record.get_time()
+                taiwan_time = convert_to_taiwan_time(time)
+                alarm_data[field] = value
+                report_time = taiwan_time
+
+        # 添加报告时间
+        if report_time:
+            alarm_data['EventTime'] = report_time
+
+        # 确保提取 AlarmId 并作为 fault_id 使用
+        if 'AlarmId' in alarm_data:
+            alarm_data['fault_id'] = alarm_data['AlarmId']
+        else:
+            print("No AlarmId found in the data.")
+
+        return alarm_data if alarm_data else None
+    except Exception as e:
+        return {"error": str(e)}
+
+
+
+# 动态确定DeviceID并处理告警
+def handle_fault(fault_id):
+    if fault_id in fault_to_device_mapping:
+        device_type, _ = fault_to_device_mapping[fault_id]
+
+        # 获取告警事件数据
+        alarm_data = get_alarm_event()
+        if not alarm_data:
+            print("No alarm data available.")
+            return
+
+        # 根据设备类型动态设置DeviceID并发送不同的数据包
+        if device_type == "RU":
+            ru_alarm_data = get_alarm_event()
+            a = 2001
+            post_fault_data("RU01001", a, ru_alarm_data)
+        elif device_type == "DU":
+            du_alarm_data = get_alarm_event()
+            a = 3001
+            post_fault_data("DU01001", a, du_alarm_data)
+        elif device_type == "CU":
+            cu_alarm_data = get_alarm_event()
+            a = 4001
+            post_fault_data("CU01001", a, cu_alarm_data)
+        elif device_type == "RU_DU":
+            # 发送RU类型封包
+            ru_alarm_data = get_alarm_event()
+            a = 2001
+            post_fault_data("RU01001", a, ru_alarm_data)
+
+            # 发送DU类型封包
+            du_alarm_data = get_alarm_event()
+            a = 3001
+            post_fault_data("DU01001", a, du_alarm_data)
+
+            # RU和DU类型封包后直接返回，避免继续执行
+            return
+
+        elif device_type == "DU_CU":
+            # 发送DU类型封包
+            du_alarm_data = get_alarm_event()
+            a = 3001
+            post_fault_data("DU01001", a, du_alarm_data)  # 发送DU
+
+            # 发送CU类型封包
+            cu_alarm_data = get_alarm_event()
+            a = 4001
+            post_fault_data("CU01001", a, cu_alarm_data)  # 发送CU
+            return
+    else:
+        print(f"Fault ID {fault_id} not found in mapping.")
+
+
+# POST设备数据到指定的API
+def post_fault_data(device_type, DeviceId, alarm_data):
+    base_url = "http://192.168.0.25/api/v1/ORAN/O1Fault"
+    server_id = 10001
+    url = f"{base_url}?serverid={server_id}"
+
+    # 请求头
+    headers = {
+        'Content-Type': 'application/json'
+    }
+
+    formatted_data = {
+            "DeviceId": DeviceId,
+            "DeviceType": device_type,
+            "AlarmId": alarm_data.get("AlarmId",0),
+            "EventTime": alarm_data.get("EventTime", ""),
+            "EventSeverity": alarm_data.get("EventServerity", ""),
+            "SystemDN": alarm_data.get("systemDN", ""),
+            "AlarmType": alarm_data.get("AlarmType", ""),
+            "ProbableCause": alarm_data.get("ProbableCause", ""),
+            "IsCleared": alarm_data.get("isCleared", "")
+    }
+
+
+
+    # 发送POST请求
+    response = requests.post(url, headers=headers, json=formatted_data)
+    if response.status_code == 200:
+        print(f"Success: {response.json()}")
+    else:
+        print(f"Error: {response.status_code}, {response.text}")
+
 
 # 将 UTC 时间转换为台湾时间
 def convert_to_taiwan_time(utc_time):
@@ -68,7 +227,7 @@ def get_cu_device_data(device_name):
         # 查询o1_performance bucket中的数据
         query_performance = f'''
         from(bucket: "{INFLUXDB_BUCKET_PERFORMANCE}")
-          |> range(start: -1h)
+          |> range(start: -5m)
           |> filter(fn: (r) => r._measurement == "{device_name}")
           |> sort(columns: ["_time"], desc: true)
           |> limit(n: 1)
@@ -77,7 +236,7 @@ def get_cu_device_data(device_name):
         # 查询PDCP_Throughput bucket中的数据
         query_pdcp = f'''
         from(bucket: "{INFLUXDB_BUCKET_PDCP}")
-          |> range(start: -1h)
+          |> range(start: -5m)
           |> filter(fn: (r) => r._measurement == "ue_sum_info" or r._measurement == "ue_info")
           |> sort(columns: ["_time"], desc: true)
           |> limit(n: 1)
@@ -114,7 +273,7 @@ def get_cu_device_data(device_name):
         return {"error": str(e)}
 
 # 将设备数据POST到相应的API
-def post_device_data(device_type, device_data):
+def post_pm_data(device_type, device_data):
     base_url = "http://192.168.0.25/api/v1/ORAN"
     server_id = 10001
     url = f"{base_url}/{device_type}Data?serverid={server_id}"
@@ -126,13 +285,11 @@ def post_device_data(device_type, device_data):
 
     # 发送POST请求
     response = requests.post(url, headers=headers, json=device_data)
-
     if response.status_code == 200:
         print(f"Success: {response.json()}")
     else:
         print(f"Error: {response.status_code}, {response.text}")
 
-# 格式化设备响应
 # 响应格式化函数
 def format_response(device_type, device_data):
     if device_type == 'PDU':
@@ -268,6 +425,7 @@ def format_response(device_type, device_data):
         })
 
 
+
 # 自动化定时发送设备数据的函数
 def send_device_data():
     device_names = ['RU01001', 'DU01001', 'CU01001', 'PDU01001']
@@ -297,10 +455,22 @@ def send_device_data():
         response_data = format_response(device_type, device_data)
         
         # POST设备数据到指定的API路径
-        post_device_data(device_type, response_data)
-
+        post_pm_data(device_type, response_data)
+  
+    alarm_data = get_alarm_event()
+    print("Alarm Data:", alarm_data)
+    if alarm_data:
+        fault_id = alarm_data.get("fault_id")  # 确保从 alarm_data 中获取 fault_id
+        if fault_id:
+            print(f"Handling fault ID: {fault_id}")
+            handle_fault(fault_id)
+        else:
+            print("No fault ID found.")
+    else:
+        print("No alarm data found.")
+   
     # 每一分钟执行一次
-    threading.Timer(10, send_device_data).start()
+    threading.Timer(60, send_device_data).start()
 
 # 启动自动发送数据
 @app.route('/start', methods=['GET'])
