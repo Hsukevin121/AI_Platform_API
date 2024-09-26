@@ -1,0 +1,9 @@
+# config.py
+
+# InfluxDB连接配置
+INFLUXDB_URL = "http://192.168.0.39:30001"
+INFLUXDB_TOKEN = "bA4f9O4UZcg2IgCLndENMmhuAT110mdU"
+INFLUXDB_ORG = "influxdata"
+INFLUXDB_BUCKET_PERFORMANCE = "o1_performance"
+INFLUXDB_BUCKET_SOCKET = "socket_info"
+INFLUXDB_BUCKET_PDCP = "PDCP_Throughput"
