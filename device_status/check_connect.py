@@ -3,24 +3,25 @@ from pysnmp.hlapi import *
 from influxdb_client import InfluxDBClient
 import pymysql
 import datetime
+import pytz  # 引入pytz库
 import requests
-
+import config  # 引入配置文件
 
 # MySQL数据库连接信息
 db_connection = pymysql.connect(
-    host='localhost',
-    user='root',
-    password='rtlab666',
-    database='devicelist'
+    host=config.DB_HOST,
+    user=config.DB_USER,
+    password=config.DB_PASSWORD,
+    database=config.DB_NAME
 )
 
 # InfluxDB客户端配置
-influx_client = InfluxDBClient(url="http://192.168.0.39:30001", token="l2yrVMPtDQW6Zl9KEVRI2o3LqloJcZue", org="influxdata")
+influx_client = InfluxDBClient(url=config.INFLUX_URL, token=config.INFLUX_TOKEN, org=config.INFLUX_ORG)
 
 # Netconf检查
 def check_ru_status():
     try:
-        response = requests.get("https://192.168.135.102:16000/api/v2/netconf-proxy/oran-mp/rpc/get/all", verify=False, headers={"accept": "application/json"})
+        response = requests.get(config.NETCONF_API_URL, verify=config.NETCONF_API_VERIFY, headers={"accept": "application/json"})
         response.raise_for_status()
         if "ACTIVE" in response.text:
             return 1  # 正常
@@ -33,10 +34,10 @@ def check_ru_status():
 def check_pdu_status():
     error_indication, error_status, error_index, var_binds = next(
         getCmd(SnmpEngine(),
-               CommunityData('public'),
-               UdpTransportTarget(('192.168.1.10', 161)),
+               CommunityData(config.SNMP_COMMUNITY),
+               UdpTransportTarget((config.SNMP_TARGET, config.SNMP_PORT)),
                ContextData(),
-               ObjectType(ObjectIdentity('1.3.6.1.2.1.1.5.0')))
+               ObjectType(ObjectIdentity(config.SNMP_OID)))
     )
     if error_indication or error_status:
         return 2  # 不正常
@@ -45,7 +46,6 @@ def check_pdu_status():
 
 # InfluxDB检查
 def check_cu_status():
-    current_time = datetime.datetime.utcnow()
     query = f'from(bucket: "o1_performance") |> range(start: -5m) |> filter(fn: (r) => r["_measurement"] == "CU01001")'
     result = influx_client.query_api().query(query)
     if len(result) > 0:
@@ -54,7 +54,6 @@ def check_cu_status():
         return 2  # 不正常
 
 def check_du_status():
-    current_time = datetime.datetime.utcnow()
     query = f'from(bucket: "o1_performance") |> range(start: -5m) |> filter(fn: (r) => r["_measurement"] == "DU01001")'
     result = influx_client.query_api().query(query)
     if len(result) > 0:
@@ -62,9 +61,12 @@ def check_du_status():
     else:
         return 2  # 不正常
 
-
 # 更新MySQL数据库中的设备状态
 def update_device_status(deviceid, new_status):
+    # 获取当前台湾时间
+    tz = pytz.timezone('Asia/Taipei')
+    updated_at = datetime.datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')
+
     # 先检查当前设备的status
     with db_connection.cursor() as cursor:
         cursor.execute("SELECT status FROM devicelist WHERE deviceid = %s", (deviceid,))
@@ -91,23 +93,23 @@ def update_device_status(deviceid, new_status):
         elif new_status == 2:
             message = "The device is disconnected"
 
-    # 更新数据库中的状态和message
+    # 更新数据库中的状态、message 和 updated_at
     with db_connection.cursor() as cursor:
-        sql = "UPDATE devicelist SET status = %s, message = %s WHERE deviceid = %s"
-        cursor.execute(sql, (new_status, message, deviceid))
+        sql = "UPDATE devicelist SET status = %s, message = %s, updated_at = %s WHERE deviceid = %s"
+        cursor.execute(sql, (new_status, message, updated_at, deviceid))
         db_connection.commit()
 
 # 定时任务：检查设备状态并更新数据库
 def check_devices():
     ru_status = check_ru_status()
     update_device_status(2001, ru_status)
-    
+
     pdu_status = check_pdu_status()
     update_device_status(5001, pdu_status)
-    
+
     du_status = check_du_status()
     update_device_status(3001, du_status)
-    
+
     cu_status = check_cu_status()
     update_device_status(4001, cu_status)
 
