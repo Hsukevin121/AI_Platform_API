@@ -3,6 +3,7 @@ from pysnmp.hlapi import *
 from influxdb_client import InfluxDBClient
 import pymysql
 import datetime
+import pytz  # 引入pytz库
 import requests
 import config  # 引入配置文件
 
@@ -62,6 +63,10 @@ def check_du_status():
 
 # 更新MySQL数据库中的设备状态
 def update_device_status(deviceid, new_status):
+    # 获取当前台湾时间
+    tz = pytz.timezone('Asia/Taipei')
+    updated_at = datetime.datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')
+
     # 先检查当前设备的status
     with db_connection.cursor() as cursor:
         cursor.execute("SELECT status FROM devicelist WHERE deviceid = %s", (deviceid,))
@@ -88,10 +93,10 @@ def update_device_status(deviceid, new_status):
         elif new_status == 2:
             message = "The device is disconnected"
 
-    # 更新数据库中的状态和message
+    # 更新数据库中的状态、message 和 updated_at
     with db_connection.cursor() as cursor:
-        sql = "UPDATE devicelist SET status = %s, message = %s WHERE deviceid = %s"
-        cursor.execute(sql, (new_status, message, deviceid))
+        sql = "UPDATE devicelist SET status = %s, message = %s, updated_at = %s WHERE deviceid = %s"
+        cursor.execute(sql, (new_status, message, updated_at, deviceid))
         db_connection.commit()
 
 # 定时任务：检查设备状态并更新数据库
@@ -110,3 +115,4 @@ def check_devices():
 
 if __name__ == '__main__':
     check_devices()
+
