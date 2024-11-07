@@ -4,7 +4,7 @@ FROM python:3.9-slim
 # 设置工作目录
 WORKDIR /app
 
-# 将当前目录的内容复制到容器中的 /app 目录
+# 将当前目录的内容（包括 config.py）复制到容器中的 /app 目录
 COPY . /app
 
 # 安装所需的 Python 包
