@@ -6,6 +6,7 @@ from ncclient import manager
 import config  # 引用配置文件
 from functools import wraps
 import base64
+from datetime import datetime, timedelta
 import time
 
 app = Flask(__name__)
@@ -153,17 +154,17 @@ def check_influxdb(ran_id):
 #@authenticate
 def quick_check():
     ran_data = get_bbu_info()
+    report_time = (datetime.now() + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
     if not ran_data:
-        return jsonify({"status": "error", "message": "Failed to retrieve BBU Info from NETCONF"}), 400
+        return jsonify({"reporttime": report_time,"status": "error", "message": "Failed to retrieve BBU Info from NETCONF"}), 400
 
     for ran_id, ran_info in ran_data.items():
         if not send_to_ves_collector(ran_id, ran_info):
-            return jsonify({"status": "error", "message": f"Failed to send data to VES Collector for {ran_id}"}), 400
+            return jsonify({"reporttime": report_time,"status": "error", "message": f"Failed to send data to VES Collector for {ran_id}"}), 400
 
         if not check_influxdb(ran_id):
-            return jsonify({"status": "error", "message": f"Data not found in InfluxDB for {ran_id}"}), 400
-
-    return jsonify({"status": "success", "message": "Quick check passed, all data correctly stored in InfluxDB"}), 200
+            return jsonify({"reporttime": report_time,"status": "error", "message": f"Data not found in InfluxDB for {ran_id}"}), 400
+    return jsonify({"reporttime": report_time,"status": "success", "message": "Quick check passed, all data correctly stored in InfluxDB"}), 200
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=8080 )
