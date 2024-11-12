@@ -16,7 +16,8 @@ db_connection = pymysql.connect(
     host=config.DB_HOST,
     user=config.DB_USER,
     password=config.DB_PASSWORD,
-    database=config.DB_DATABASE
+    database=config.DB_DATABASE,
+    autocommit=True
 )
 
 # 验证装饰器
@@ -43,6 +44,9 @@ def update_device_model(devicename, model_value):
             db_connection.commit()
     except Exception as e:
         print(f"Failed to update model for {devicename}: {e}")
+    finally:
+        cursor.close()
+
 
 @app.route('/api/v1/ORAN/cu/info', methods=['GET'])
 #@authenticate
