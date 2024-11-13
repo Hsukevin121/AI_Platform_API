@@ -39,13 +39,32 @@ def authenticate(func):
 def update_device_model(devicename, model_value):
     try:
         with db_connection.cursor() as cursor:
-            sql = "UPDATE devicelist SET model = %s WHERE devicename = %s"
-            cursor.execute(sql, (model_value, devicename))
+            if devicename == "RU01001":
+                sql = "UPDATE devicelist SET model = %s WHERE devicename = %s"
+                cursor.execute(sql, (model_value, devicename))
+            elif devicename == "CU01001":
+                sql = "UPDATE devicelist SET model = %s WHERE devicename = %s OR devicename = %s"
+                cursor.execute(sql, (model_value, "CU01001", "DU01001"))
+            else:
+                print(f"Device {devicename} is not supported.")
             db_connection.commit()
     except Exception as e:
         print(f"Failed to update model for {devicename}: {e}")
     finally:
-        cursor.close()
+        if 'cursor' in locals() and cursor:
+            cursor.close()
+
+
+#def update_device_model1(devicename1, devicename2, model_value):
+#    try:
+#        with db_connection.cursor() as cursor:
+#            sql = "UPDATE devicelist SET model = %s WHERE devicename = %s OR devicename = %s"
+#            cursor.execute(sql, (model_value, devicename1, devicename2))
+#            db_connection.commit()
+#    except Exception as e:
+#        print(f"Failed to update model for {devicename1} and {devicename2}: {e}")
+
+
 
 
 @app.route('/api/v1/ORAN/cu/info', methods=['GET'])
@@ -85,7 +104,7 @@ def control_cpu_energy_saving():
             # 更新数据库中的 model 字段
             update_device_model("CU01001", 1)
 
-            return jsonify({"message": f"{devicename} open the energy saving model"}), 200
+            return jsonify({"message":"CU01001 and DU01001 open the energy saving model"}), 200
         except requests.exceptions.RequestException as e:
             return jsonify({"error": str(e)}), 500
 
@@ -100,7 +119,7 @@ def control_cpu_energy_saving():
             # 更新数据库中的 model 字段
             update_device_model("CU01001", 2)
 
-            return jsonify({"message": f"{devicename} close the energy saving model"}), 200
+            return jsonify({"message": "CU01001 and DU01001 close the energy saving model"}), 200
         except requests.exceptions.RequestException as e:
             return jsonify({"error": str(e)}), 500
 
@@ -179,4 +198,4 @@ def control_ru_power():
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=8080)
+    app.run( host='0.0.0.0', port=8080)
