@@ -11,14 +11,20 @@ app = Flask(__name__)
 # 禁用 InsecureRequestWarning 警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# 数据库连接
-db_connection = pymysql.connect(
-    host=config.DB_HOST,
-    user=config.DB_USER,
-    password=config.DB_PASSWORD,
-    database=config.DB_DATABASE,
-    autocommit=True
-)
+def get_db_connection():
+    try:
+        connection = pymysql.connect(
+            host=config.DB_HOST,
+            user=config.DB_USER,
+            password=config.DB_PASSWORD,
+            database=config.DB_DATABASE,
+            autocommit=True
+        )
+        print("Database connection successful")
+        return connection
+    except Exception as e:
+        print(f"Database connection failed: {e}")
+        return None
 
 # 验证装饰器
 def authenticate(func):
@@ -35,36 +41,32 @@ def authenticate(func):
         return jsonify({'status': 'Unauthorized'}), 401
     return decorated_function
 
-# 更新数据库中设备的 model 字段
 def update_device_model(devicename, model_value):
+    db_connection = get_db_connection()
+    if not db_connection:
+        print("Failed to get database connection")
+        return False  # 数据库连接失败
     try:
         with db_connection.cursor() as cursor:
             if devicename == "RU01001":
                 sql = "UPDATE devicelist SET model = %s WHERE devicename = %s"
+                print(f"Executing SQL: {sql} with values: {model_value}, {devicename}")
                 cursor.execute(sql, (model_value, devicename))
             elif devicename == "CU01001":
                 sql = "UPDATE devicelist SET model = %s WHERE devicename = %s OR devicename = %s"
+                print(f"Executing SQL: {sql} with values: {model_value}, 'CU01001', 'DU01001'")
                 cursor.execute(sql, (model_value, "CU01001", "DU01001"))
             else:
                 print(f"Device {devicename} is not supported.")
+                return False
             db_connection.commit()
+            print(f"Successfully updated model for {devicename}")
+            return True
     except Exception as e:
         print(f"Failed to update model for {devicename}: {e}")
+        return False
     finally:
-        if 'cursor' in locals() and cursor:
-            cursor.close()
-
-
-#def update_device_model1(devicename1, devicename2, model_value):
-#    try:
-#        with db_connection.cursor() as cursor:
-#            sql = "UPDATE devicelist SET model = %s WHERE devicename = %s OR devicename = %s"
-#            cursor.execute(sql, (model_value, devicename1, devicename2))
-#            db_connection.commit()
-#    except Exception as e:
-#        print(f"Failed to update model for {devicename1} and {devicename2}: {e}")
-
-
+        db_connection.close()
 
 
 @app.route('/api/v1/ORAN/cu/info', methods=['GET'])
@@ -82,17 +84,16 @@ def info_cpu():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/v1/ORAN/cu', methods=['PUT'])
-#@authenticate
 def control_cpu_energy_saving():
     data = request.json
+    print(f"Received data: {data}")
     devicename = data.get('devicename')
     model = data.get('model')
 
-    # 检查是否缺少必需的参数
     if not devicename or not model:
+        print("Missing devicename or model parameter")
         return jsonify({"error": "Missing devicename or model parameter"}), 400
 
-    # CPU 节能模式映射
     if model == "1":
         try:
             response = requests.get(
@@ -100,12 +101,15 @@ def control_cpu_energy_saving():
                 headers={'accept': 'application/json'},
                 verify=config.VERIFY_SSL
             )
+            print("Response from API:", response.status_code, response.text)
 
-            # 更新数据库中的 model 字段
-            update_device_model("CU01001", 1)
-
-            return jsonify({"message":"CU01001 and DU01001 open the energy saving model"}), 200
+            if update_device_model("CU01001", 1):
+                return jsonify({"message": "CU01001 and DU01001 open the energy saving model"}), 200
+            else:
+                print("Failed to update database")
+                return jsonify({"error": "Failed to update database"}), 500
         except requests.exceptions.RequestException as e:
+            print(f"Failed to call API: {e}")
             return jsonify({"error": str(e)}), 500
 
     elif model == "2":
@@ -115,16 +119,21 @@ def control_cpu_energy_saving():
                 headers={'accept': 'application/json'},
                 verify=config.VERIFY_SSL
             )
+            print("Response from API:", response.status_code, response.text)
 
-            # 更新数据库中的 model 字段
-            update_device_model("CU01001", 2)
-
-            return jsonify({"message": "CU01001 and DU01001 close the energy saving model"}), 200
+            if update_device_model("CU01001", 2):
+                return jsonify({"message": "CU01001 and DU01001 close the energy saving model"}), 200
+            else:
+                print("Failed to update database")
+                return jsonify({"error": "Failed to update database"}), 500
         except requests.exceptions.RequestException as e:
+            print(f"Failed to call API: {e}")
             return jsonify({"error": str(e)}), 500
 
     else:
+        print("Invalid model parameter")
         return jsonify({"error": "Invalid model parameter"}), 400
+
 
 @app.route('/api/v1/ORAN/ru', methods=['PUT'])
 #@authenticate
@@ -170,24 +179,13 @@ def control_ru_power():
             response_data = response.json()
 
             # 更新数据库中的 model 字段
-            update_device_model("RU01001", model)
-
-            # 将 "ru1" 替换为 devicename ("RU01001")
-            if 'msg' in response_data and 'ru1' in response_data['msg']:
-                response_data['msg'][devicename] = response_data['msg'].pop('ru1')
-
-            return jsonify({
-                "response": {
-                    "msg": {
-                        devicename: {
-                            "success": response_data['msg'][devicename]['success'],
-                            "tx_power": response_data['msg'][devicename]['tx_power']
-                        }
-                    },
-                    "success": response_data['success']
-                }
-            }), 200
-
+            if update_device_model("RU01001", model):
+                # 替换返回值的 `ru1` 为实际的设备名
+                if 'msg' in response_data and 'ru1' in response_data['msg']:
+                    response_data['msg'][devicename] = response_data['msg'].pop('ru1')
+                return jsonify({"response": response_data}), 200
+            else:
+                return jsonify({"error": "Failed to update database"}), 500
         else:
             return jsonify({
                 "error": f"Failed to set tx_power. Status code: {response.status_code}",
@@ -198,4 +196,4 @@ def control_ru_power():
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    app.run( host='0.0.0.0', port=8080)
+    app.run(host='0.0.0.0', port=8080)
