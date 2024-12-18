@@ -1,170 +1,133 @@
 from flask import Flask, request, jsonify
 import xml.etree.ElementTree as ET
-import json
 import requests
 from ncclient import manager
 import config  # 引用配置文件
-from functools import wraps
-import base64
 from datetime import datetime, timedelta
-import time
 
 app = Flask(__name__)
 
-# 用户名和密码
-USERNAME = 'AIadmin'
-PASSWORD = 'admin0000'
-
-# 验证装饰器
-def authenticate(func):
-    @wraps(func)
-    def decorated_function(*args, **kwargs):
-        auth_header = request.headers.get('Authorization')
-        if auth_header:
-            auth_type, credentials = auth_header.split(' ')
-            if auth_type.lower() == 'basic':
-                decoded_credentials = base64.b64decode(credentials).decode('utf-8')
-                username, password = decoded_credentials.split(':')
-                if username == USERNAME and password == PASSWORD:
-                    return func(*args, **kwargs)
-        return jsonify({'status': '401', 'msg': 'Unauthorized'}), 401
-    return decorated_function
+# Function to check if InfluxDB is alive
+def check_influxdb_status():
+    """
+    檢查 InfluxDB 是否活著（通過 /ping API）。
+    """
+    url = f"{config.INFLUXDB_URL}/ping"
+    try:
+        response = requests.get(url, timeout=5)
+        if response.status_code == 204:  # InfluxDB /ping 成功返回 204
+            return True
+        return False
+    except Exception as e:
+        print(f"InfluxDB status check failed: {e}")
+        return False
 
 # Function to execute NETCONF command and parse data
 def get_bbu_info():
+    """
+    從 NETCONF 取得 BBU 資訊。
+    """
     try:
         with manager.connect(**config.device_params, hostkey_verify=False) as m:
             print("NETCONF Session Connected Successfully.")
             get_reply = m.get(filter=('subtree', config.filter_str))
-            print("NETCONF GET Operation Result:")
-            print(get_reply)
-
-            # Parse the XML data
             root = ET.fromstring(str(get_reply))
-            namespaces = {
-                'base': 'urn:ietf:params:xml:ns:netconf:base:1.0',
-                'multiran': 'urn:reign-altran-o1-cm-multiran:1.0'
-            }
+            namespaces = {'multiran': 'urn:reign-altran-o1-cm-multiran:1.0'}
 
-            # Find all ran-id elements and their corresponding data
             ran_data = {}
             for multiran_cm in root.findall('.//multiran:multiran-cm', namespaces):
                 ran_id = multiran_cm.find('multiran:ran-id', namespaces).text
-                PLMNID = multiran_cm.find('.//multiran:PLMNID', namespaces).text
-                BBU_IP = multiran_cm.find('.//multiran:IP_info/multiran:BBU_IP', namespaces).text
-                BBU_NETMASK = multiran_cm.find('.//multiran:IP_info/multiran:BBU_NETMASK', namespaces).text
-                BBU_Gateway_IP = multiran_cm.find('.//multiran:IP_info/multiran:BBU_Gateway_IP', namespaces).text
-                AMF_IP = multiran_cm.find('.//multiran:IP_info/multiran:AMF_IP', namespaces).text
-                gNB_ID = multiran_cm.find('.//multiran:NCI/multiran:gNB_ID', namespaces).text
-
-                ran_data[ran_id] = {
-                    "PLMNID": PLMNID,
-                    "BBU_IP": BBU_IP,
-                    "BBU_NETMASK": BBU_NETMASK,
-                    "BBU_Gateway_IP": BBU_Gateway_IP,
-                    "AMF_IP": AMF_IP,
-                    "gNB_ID": gNB_ID
-                }
-
+                ran_data[ran_id] = {"status": "ok"}
             return ran_data
     except Exception as e:
-        print(f"Failed to retrieve BBU Info: {e}")
+        print(f"Failed to retrieve BBU Info from NETCONF: {e}")
         return None
 
-# Function to send data to VES Collector
-def send_to_ves_collector(ran_id, ran_info):
-    payload = {
-        "event": {
-            "commonEventHeader": {
-                "domain": "other",
-                "eventId": "node1.cluster.local_2024-04-19T08:51:36.801439+00:00Z",
-                "eventName": "heartbeat_O_RAN_COMPONENT",
-                "eventType": "O_RAN_COMPONENT",
-                "lastEpochMicrosec": 1713516696801439,
-                "nfNamingCode": "SDN-Controller",
-                "nfVendorName": "O-RAN-SC OAM",
-                "priority": "Low",
-                "reportingEntityId": "",
-                "reportingEntityName": "node1.cluster.local",
-                "sequence": 357,
-                "sourceId": "",
-                "sourceName": "node1.cluster.local",
-                "startEpochMicrosec": 1713516696801439,
-                "timeZoneOffset": "+00:00",
-                "version": "4.1",
-                "vesEventListenerVersion": "7.2.1"
-            },
-            "otherFields": {
-                "otherFieldsVersion": "3.0",
-                "arrayOfNamedHashMap": [
-                    {
-                        "name": ran_id,
-                        "hashMap": ran_info
-                    }
-                ]
-            }
-        }
-    }
-
-    payload_json = json.dumps(payload, indent=2)
-    headers = {"Content-Type": "application/json"}
-
-    try:
-        print(f"Sending data to VES Collector: {payload_json}")
-        response = requests.post(config.VES_COLLECTOR_URL, headers=headers, data=payload_json, auth=(config.VES_COLLECTOR_USERNAME, config.VES_COLLECTOR_PASSWORD), verify=False)
-        print(f"VES Collector Response status code: {response.status_code}")
-        print(f"VES Collector Response text: {response.text}")
-        return response.status_code == 202
-    except Exception as e:
-        print(f"Failed to send data to VES Collector: {e}")
-        return False
-
-# Function to check if data exists in InfluxDB 2.0
-def check_influxdb(ran_id):
-    time.sleep(5)
-    query = f'from(bucket: "{config.INFLUXDB_BUCKET}") |> range(start: -30s) |> filter(fn: (r) => r._measurement == "BBU_Info" and r.name == "{ran_id}")'
+# Function to check InfluxDB data availability
+def check_influxdb_data_consistency(measurement):
+    """
+    檢查 InfluxDB 最新一筆數據的參數數量是否與前 60 筆數據中的任意一筆一致。
+    """
+    query = f'''
+    from(bucket: "{config.INFLUXDB_BUCKET_1}")
+      |> range(start: -24h)
+      |> filter(fn: (r) => r._measurement == "{measurement}")
+      |> sort(columns: ["_time"], desc: true)
+      |> limit(n: 60)
+    '''
     headers = {
         "Authorization": f"Token {config.INFLUXDB_TOKEN}",
         "Content-Type": "application/vnd.flux"
     }
-    url = f"{config.INFLUXDB_URL}/api/v2/query"
-    params = {
-        "org": config.INFLUXDB_ORG
-    }
+    url = f"{config.INFLUXDB_URL}/api/v2/query?org={config.INFLUXDB_ORG}"
 
     try:
-        print(f"Sending query to InfluxDB: {query}")
-        response = requests.post(url, headers=headers, params=params, data=query)
-        print(f"Response status code: {response.status_code}")
-        print(f"Response text: {response.text}")
+        response = requests.post(url, headers=headers, data=query.encode('utf-8'))
+        if response.status_code != 200:
+            print(f"InfluxDB query failed: {response.text}")
+            return False
 
-        if response.status_code == 200:
-            if response.text.strip() == "":
-                print("InfluxDB query response is empty")
-                return False
-            else:
-                print(f"InfluxDB query response: {response.text}")
-                return True
+        # 解析響應數據並統計每條記錄的參數數量
+        lines = response.text.strip().split("\n")
+        param_count_list = []
+
+        for line in lines:
+            if not line.startswith("_result") and line.strip():  # 過濾非數據行和空行
+                param_count_list.append(len(line.split(",")))
+
+        # 檢查數據一致性
+        if len(param_count_list) < 2:
+            return False  # 不足以比較數據
+
+        latest_param_count = param_count_list[0]  # 最新一筆數據的參數數量
+        for count in param_count_list[1:]:
+            if count == latest_param_count:
+                return True  # 找到一致的數據
         return False
     except Exception as e:
-        print(f"Failed to query InfluxDB: {e}")
+        print(f"Error checking InfluxDB data consistency: {e}")
         return False
 
 @app.route('/api/v1/ORAN/quick_check', methods=['GET'])
-#@authenticate
 def quick_check():
-    ran_data = get_bbu_info()
+    """
+    進行 BBU_Info 和 InfluxDB 狀態檢查。
+    """
     report_time = (datetime.now() + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
-    if not ran_data:
-        return jsonify({"reporttime": report_time,"status": "error", "message": "Failed to retrieve BBU Info from NETCONF"}), 400
 
-    for ran_id, ran_info in ran_data.items():
-        if not send_to_ves_collector(ran_id, ran_info):
-            return jsonify({"reporttime": report_time,"status": "error", "message": f"Failed to send data to VES Collector for {ran_id}"}), 400
+    # Step 1: Check BBU Info
+    bbu_info = get_bbu_info()
+    if not bbu_info or len(bbu_info) == 0:
+        return jsonify({
+            "reporttime": report_time,
+            "status": "error",
+            "message": "Failed to retrieve BBU Info from NETCONF."
+        }), 400
 
-        if not check_influxdb(ran_id):
-            return jsonify({"reporttime": report_time,"status": "error", "message": f"Data not found in InfluxDB for {ran_id}"}), 400
-    return jsonify({"reporttime": report_time,"status": "success", "message": "Quick check passed, all data correctly stored in InfluxDB"}), 200
+    # Step 2: Check if InfluxDB is alive
+    if not check_influxdb_status():
+        return jsonify({
+            "reporttime": report_time,
+            "status": "error",
+            "message": "InfluxDB is not reachable or is down."
+        }), 400
+
+    # Step 3: Check InfluxDB data for each measurement
+    measurements = ["CU01001", "DU01001"]
+    for measurement in measurements:
+        result = check_influxdb_data_consistency(measurement)
+        if not result:
+            return jsonify({
+                "reporttime": report_time,
+                "status": "error",
+                "message": f"No data with matching parameter count for {measurement} in the last 60 records."
+            }), 400
+
+    return jsonify({
+        "reporttime": report_time,
+        "status": "success",
+        "message": "BBU Info and InfluxDB data checks passed successfully."
+    }), 200
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=8080 )
+    app.run(debug=True, host='0.0.0.0', port=8080)
