@@ -1,169 +1,208 @@
-from flask import Flask, request, jsonify
-import xml.etree.ElementTree as ET
-import json
-import requests
-from ncclient import manager
-import config  # 引用配置文件
-from functools import wraps
-import base64
+import glob
+import os
 import time
+import xml.etree.ElementTree as ET
+from flask import Flask, jsonify
+import requests
+from influxdb_client import InfluxDBClient, Point
+from influxdb_client.client.write_api import SYNCHRONOUS
+from datetime import datetime, timedelta
+
+# InfluxDB 配置
+bucket = "o1_performance"
+org = "influxdata"
+token = "bzgBwlyDG8ZWBo0LP2hpbJ48I9zhZtMR"
+url = "http://192.168.0.39:30001"
+client = InfluxDBClient(url=url, token=token)
+write_api = client.write_api(write_options=SYNCHRONOUS)
+
+dynamic_param_sets = {}  # 用于记录每个 measurement 的历史参数集合
 
 app = Flask(__name__)
 
-# 用户名和密码
-USERNAME = 'AIadmin'
-PASSWORD = 'admin0000'
-
-# 验证装饰器
-def authenticate(func):
-    @wraps(func)
-    def decorated_function(*args, **kwargs):
-        auth_header = request.headers.get('Authorization')
-        if auth_header:
-            auth_type, credentials = auth_header.split(' ')
-            if auth_type.lower() == 'basic':
-                decoded_credentials = base64.b64decode(credentials).decode('utf-8')
-                username, password = decoded_credentials.split(':')
-                if username == USERNAME and password == PASSWORD:
-                    return func(*args, **kwargs)
-        return jsonify({'status': '401', 'msg': 'Unauthorized'}), 401
-    return decorated_function
-
-# Function to execute NETCONF command and parse data
-def get_bbu_info():
+# Function to check if InfluxDB is alive
+def check_influxdb_status():
+    """
+    检查 InfluxDB 是否活着（通过 /ping API）。
+    """
+    ping_url = f"{url}/ping"  # 避免冲突，使用局部变量 ping_url
     try:
-        with manager.connect(**config.device_params, hostkey_verify=False) as m:
-            print("NETCONF Session Connected Successfully.")
-            get_reply = m.get(filter=('subtree', config.filter_str))
-            print("NETCONF GET Operation Result:")
-            print(get_reply)
-
-            # Parse the XML data
-            root = ET.fromstring(str(get_reply))
-            namespaces = {
-                'base': 'urn:ietf:params:xml:ns:netconf:base:1.0',
-                'multiran': 'urn:reign-altran-o1-cm-multiran:1.0'
-            }
-
-            # Find all ran-id elements and their corresponding data
-            ran_data = {}
-            for multiran_cm in root.findall('.//multiran:multiran-cm', namespaces):
-                ran_id = multiran_cm.find('multiran:ran-id', namespaces).text
-                PLMNID = multiran_cm.find('.//multiran:PLMNID', namespaces).text
-                BBU_IP = multiran_cm.find('.//multiran:IP_info/multiran:BBU_IP', namespaces).text
-                BBU_NETMASK = multiran_cm.find('.//multiran:IP_info/multiran:BBU_NETMASK', namespaces).text
-                BBU_Gateway_IP = multiran_cm.find('.//multiran:IP_info/multiran:BBU_Gateway_IP', namespaces).text
-                AMF_IP = multiran_cm.find('.//multiran:IP_info/multiran:AMF_IP', namespaces).text
-                gNB_ID = multiran_cm.find('.//multiran:NCI/multiran:gNB_ID', namespaces).text
-
-                ran_data[ran_id] = {
-                    "PLMNID": PLMNID,
-                    "BBU_IP": BBU_IP,
-                    "BBU_NETMASK": BBU_NETMASK,
-                    "BBU_Gateway_IP": BBU_Gateway_IP,
-                    "AMF_IP": AMF_IP,
-                    "gNB_ID": gNB_ID
-                }
-
-            return ran_data
+        response = requests.get(ping_url, timeout=5)
+        if response.status_code == 204:  # InfluxDB /ping 成功返回 204
+            return True
+        return False
     except Exception as e:
-        print(f"Failed to retrieve BBU Info: {e}")
-        return None
-
-# Function to send data to VES Collector
-def send_to_ves_collector(ran_id, ran_info):
-    payload = {
-        "event": {
-            "commonEventHeader": {
-                "domain": "other",
-                "eventId": "node1.cluster.local_2024-04-19T08:51:36.801439+00:00Z",
-                "eventName": "heartbeat_O_RAN_COMPONENT",
-                "eventType": "O_RAN_COMPONENT",
-                "lastEpochMicrosec": 1713516696801439,
-                "nfNamingCode": "SDN-Controller",
-                "nfVendorName": "O-RAN-SC OAM",
-                "priority": "Low",
-                "reportingEntityId": "",
-                "reportingEntityName": "node1.cluster.local",
-                "sequence": 357,
-                "sourceId": "",
-                "sourceName": "node1.cluster.local",
-                "startEpochMicrosec": 1713516696801439,
-                "timeZoneOffset": "+00:00",
-                "version": "4.1",
-                "vesEventListenerVersion": "7.2.1"
-            },
-            "otherFields": {
-                "otherFieldsVersion": "3.0",
-                "arrayOfNamedHashMap": [
-                    {
-                        "name": ran_id,
-                        "hashMap": ran_info
-                    }
-                ]
-            }
-        }
-    }
-
-    payload_json = json.dumps(payload, indent=2)
-    headers = {"Content-Type": "application/json"}
-
-    try:
-        print(f"Sending data to VES Collector: {payload_json}")
-        response = requests.post(config.VES_COLLECTOR_URL, headers=headers, data=payload_json, auth=(config.VES_COLLECTOR_USERNAME, config.VES_COLLECTOR_PASSWORD), verify=False)
-        print(f"VES Collector Response status code: {response.status_code}")
-        print(f"VES Collector Response text: {response.text}")
-        return response.status_code == 202
-    except Exception as e:
-        print(f"Failed to send data to VES Collector: {e}")
+        print(f"InfluxDB status check failed: {e}")
         return False
 
-# Function to check if data exists in InfluxDB 2.0
-def check_influxdb(ran_id):
-    time.sleep(5)
-    query = f'from(bucket: "{config.INFLUXDB_BUCKET}") |> range(start: -30s) |> filter(fn: (r) => r._measurement == "BBU_Info" and r.name == "{ran_id}")'
+# 从 SFTP 文件中提取参数和值
+def extract_parameters_from_sftp(file_path):
+    """
+    从 SFTP 文件中提取参数和值
+    """
+    try:
+        tree = ET.parse(file_path)
+        root = tree.getroot()
+
+        # 创建 measType 字典
+        meas_types = {}
+        for measType in root.findall('.//{http://www.3gpp.org/ftp/specs/archive/28_series/28.532#measData}measType'):
+            p_value = measType.attrib.get('p')
+            meas_types[p_value] = measType.text
+
+        # 遍历 measValue 标签提取数据
+        parameters = {}
+        for measValue in root.findall('.//{http://www.3gpp.org/ftp/specs/archive/28_series/28.532#measData}measValue'):
+            for r in measValue.findall('.//{http://www.3gpp.org/ftp/specs/archive/28_series/28.532#measData}r'):
+                p_value = r.attrib.get('p')
+                meas_name = meas_types.get(p_value, f"metric_{p_value}")
+                try:
+                    parameters[meas_name] = float(r.text)
+                except (ValueError, TypeError):
+                    print(f"Invalid value for {meas_name}: {r.text}")
+                    continue
+        return parameters
+    except ET.ParseError:
+        print(f"Error: Unable to parse the XML file: {file_path}")
+        return {}
+
+# 从 InfluxDB 查询数据并进行比对
+def check_influxdb_data_consistency(measurement, sftp_params):
+    """
+    比对 SFTP 参数和 InfluxDB 中的最新数据
+    """
+    query = (
+        f'from(bucket: "{bucket}") '
+        f'|> range(start: -5m) '
+        f'|> filter(fn: (r) => r["_measurement"] == "{measurement}") '
+        f'|> filter(fn: (r) => exists r["_value"]) '
+        f'|> last()'
+    )
+
+    print(f"Executing query: {query}")
+
     headers = {
-        "Authorization": f"Token {config.INFLUXDB_TOKEN}",
+        "Authorization": f"Token {token}",
         "Content-Type": "application/vnd.flux"
     }
-    url = f"{config.INFLUXDB_URL}/api/v2/query"
-    params = {
-        "org": config.INFLUXDB_ORG
-    }
+    query_url = f"{url}/api/v2/query?org={org}"
 
     try:
-        print(f"Sending query to InfluxDB: {query}")
-        response = requests.post(url, headers=headers, params=params, data=query)
-        print(f"Response status code: {response.status_code}")
-        print(f"Response text: {response.text}")
+        response = requests.post(query_url, headers=headers, data=query.encode('utf-8'))
+        if response.status_code != 200:
+            print(f"InfluxDB query failed: {response.text}")
+            return False
 
-        if response.status_code == 200:
-            if response.text.strip() == "":
-                print("InfluxDB query response is empty")
-                return False
-            else:
-                print(f"InfluxDB query response: {response.text}")
-                return True
-        return False
+        # 解析 InfluxDB 返回的数据
+        rows = response.text.strip().split("\n")
+        if not rows or len(rows) < 2:
+            print("No data rows found in InfluxDB response.")
+            return False
+
+        # 提取字段和值
+        header = rows[0].split(",")
+        field_index = header.index("_field")
+        value_index = header.index("_value")
+
+        influxdb_params = {}
+        for row in rows[1:]:
+            if not row.startswith("#") and row.strip():  # 跳过注释和空行
+                columns = row.split(",")
+                field_value = columns[field_index].strip()
+                try:
+                    influxdb_params[field_value] = float(columns[value_index])
+                except ValueError:
+                    print(f"Invalid value for {field_value}: {columns[value_index]}")
+
+        # 比对 SFTP 参数和值
+        mismatches = []
+        for field, sftp_value in sftp_params.items():
+            influx_value = influxdb_params.get(field)
+            if influx_value is None:
+                mismatches.append(f"{field}: Missing in InfluxDB")
+            elif influx_value != sftp_value:
+                mismatches.append(f"{field}: SFTP={sftp_value}, InfluxDB={influx_value}")
+
+        if mismatches:
+            print(f"Mismatches detected for {measurement}: {mismatches}")
+            return False
+
+        print(f"Data consistency check passed for {measurement}.")
+        return True
     except Exception as e:
-        print(f"Failed to query InfluxDB: {e}")
+        print(f"Error checking InfluxDB data consistency: {e}")
         return False
+
+def get_latest_file(directory):
+    """
+    获取目录中最后修改的 XML 文件
+    """
+    xml_files = glob.glob(f"{directory}/*.xml")
+    if not xml_files:
+        print(f"No XML files found in {directory}.")
+        return None
+    latest_file = max(xml_files, key=os.path.getmtime)
+    print(f"Latest file in {directory}: {latest_file}")
+    return latest_file
 
 @app.route('/api/v1/ORAN/quick_check', methods=['GET'])
-#@authenticate
 def quick_check():
-    ran_data = get_bbu_info()
-    if not ran_data:
-        return jsonify({"status": "error", "message": "Failed to retrieve BBU Info from NETCONF"}), 400
+    """
+    进行 SFTP 和 InfluxDB 数据比对。
+    """
+    report_time = (datetime.now() + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
 
-    for ran_id, ran_info in ran_data.items():
-        if not send_to_ves_collector(ran_id, ran_info):
-            return jsonify({"status": "error", "message": f"Failed to send data to VES Collector for {ran_id}"}), 400
+    # Step 1: Check if InfluxDB is alive
+    if not check_influxdb_status():
+        return jsonify({
+            "reporttime": report_time,
+            "status": "error",
+            "message": "InfluxDB status check failed."
+        }), 400
 
-        if not check_influxdb(ran_id):
-            return jsonify({"status": "error", "message": f"Data not found in InfluxDB for {ran_id}"}), 400
+    # Step 2: 动态获取最新文件路径
+    sftp_files = {
+        "CU01001": get_latest_file("/app/sftp/CU"),
+        "DU01001": get_latest_file("/app/sftp/DU")
+    }
 
-    return jsonify({"status": "success", "message": "Quick check passed, all data correctly stored in InfluxDB"}), 200
+    for measurement, file_path in sftp_files.items():
+        if not file_path:
+            return jsonify({
+                "reporttime": report_time,
+                "status": "error",
+                "message": f"No file found for measurement: {measurement}."
+            }), 400
+
+        sftp_params = extract_parameters_from_sftp(file_path)
+
+        # Step 3: 比对 SFTP 参数和 InfluxDB 数据
+        if not check_influxdb_data_consistency(measurement, sftp_params):
+            return jsonify({
+                "reporttime": report_time,
+                "status": "error",
+                "message": f"Data inconsistency detected for measurement: {measurement}."
+            }), 400
+
+    return jsonify({
+        "reporttime": report_time,
+        "status": "success",
+        "message": "Data checks passed successfully."
+    }), 200
+
+@app.route('/api/v1/debug/test', methods=['GET'])
+def debug_test():
+    """
+    测试 Flask 能否访问文件目录
+    """
+    cu_files = glob.glob("/home/sftp/CU/*.xml")
+    du_files = glob.glob("/home/sftp/DU/*.xml")
+    return jsonify({
+        "CU_files": cu_files,
+        "DU_files": du_files,
+        "working_directory": os.getcwd()
+    })
+
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=8080 )
+    app.run(debug=True, host='0.0.0.0', port=8080)

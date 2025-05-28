@@ -2,6 +2,8 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: quick-check-rapp
+  labels:
+    app: quick-check-rapp
 spec:
   replicas: 1
   selector:
@@ -14,14 +16,37 @@ spec:
     spec:
       containers:
       - name: quick-check-rapp-container
-        image: hsukevin121/quick-check-rapp:latest
+        image: hsukevin121/quick-check-rapp:1.2
+        imagePullPolicy: Never
         ports:
         - containerPort: 8080
+        # 设置容器运行命令
+        command: ["python3"]
+        args: ["app.py", "--host=0.0.0.0", "--port=8080"]
+        volumeMounts:
+        # 挂载宿主机 /home/sftpuser/CU 到容器 /app/sftp/CU
+        - name: cu-volume
+          mountPath: /app/sftp/CU
+        # 挂载宿主机 /home/sftpuser/DU 到容器 /app/sftp/DU
+        - name: du-volume
+          mountPath: /app/sftp/DU
+      volumes:
+      # 定义挂载卷
+      - name: cu-volume
+        hostPath:
+          path: /home/sftpuser/CU
+          type: Directory
+      - name: du-volume
+        hostPath:
+          path: /home/sftpuser/DU
+          type: Directory
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: quick-check-rapp-service
+  labels:
+    app: quick-check-rapp
 spec:
   selector:
     app: quick-check-rapp
@@ -29,3 +54,4 @@ spec:
     - protocol: TCP
       port: 80
       targetPort: 8080
+  type: ClusterIP

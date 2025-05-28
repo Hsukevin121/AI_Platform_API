@@ -1,7 +1,7 @@
 # config.py
 
 # InfluxDB 配置信息
-INFLUXDB_TOKEN = "bA4f9O4UZcg2IgCLndENMmhuAT110mdU"
+INFLUXDB_TOKEN = "bzgBwlyDG8ZWBo0LP2hpbJ48I9zhZtMR"
 INFLUXDB_ORG = "influxdata"
 INFLUXDB_BUCKET = "BBU_Info"
 INFLUXDB_URL = "http://192.168.0.39:30001"

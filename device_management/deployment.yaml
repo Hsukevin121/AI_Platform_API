@@ -1,30 +1,30 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: device-info-rapp
+  name: device-management-rapp
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: device-info-rapp
+      app: device-management-rapp
   template:
     metadata:
       labels:
-        app: device-info-rapp
+        app: device-management-rapp
     spec:
       containers:
-      - name: device-info-rapp-container
-        image: hsukevin121/device-info-rapp:latest
+      - name: device-management-rapp-container
+        image: hsukevin121/device-management-rapp:latest
         ports:
         - containerPort: 8080
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: device-info-rapp-service
+  name: device-management-rapp-service
 spec:
   selector:
-    app: device-info-rapp
+    app: device-management-rapp
   ports:
     - protocol: TCP
       port: 80
